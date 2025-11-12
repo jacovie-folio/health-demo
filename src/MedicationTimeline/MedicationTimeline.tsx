@@ -10,12 +10,16 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   Grid,
   IconButton,
+  InputLabel,
   LinearProgress,
   List,
   ListItem,
+  MenuItem,
   Paper,
+  Select,
   Snackbar,
   Stack,
   TextField,
@@ -60,8 +64,11 @@ const MedicationTimeline: React.FC = () => {
     setNotifyMedicationChange(false)
   }, [setNotifyMedicationChange])
 
+  const [llmMode, setLLMMode] = useState<'quality' | 'fast'>('quality')
+
   const { isLoading, sendPrompt, medications } = useLLM({
     onUpdateMedications: handleAlertMedChange,
+    fast: llmMode === 'fast',
   })
 
   // Sample medication data
@@ -69,7 +76,11 @@ const MedicationTimeline: React.FC = () => {
   const handleSendMessage = (): void => {
     if (!inputValue.trim()) return
 
-    setMessages((prev) => [...prev, { role: 'user', text: inputValue }])
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', text: inputValue },
+      { role: 'assistant', text: 'Just a second while I look that up!' },
+    ])
     setInputValue('')
     sendPrompt(
       [
@@ -123,13 +134,14 @@ const MedicationTimeline: React.FC = () => {
       const times: string[] = []
 
       for (const timing of med.timingSequence) {
-        if (timing.duration && daysDiff >= timing.duration + durationSoFar) {
+        if (timing.duration && daysDiff <= timing.duration + durationSoFar) {
           durationSoFar += timing.duration
           continue
         }
 
         if (!timing.duration) {
-          return null
+          times.push('08:00')
+          return { times }
         }
 
         const frequency = timing.frequency || 1
@@ -239,16 +251,40 @@ const MedicationTimeline: React.FC = () => {
         borderColor={'divider'}
         sx={{
           height: '100vh',
-          width: '50vw',
+          width: '30vw',
           display: 'flex',
           flexDirection: 'column',
         }}
       >
         <AppBar position="static" elevation={1}>
           <Toolbar>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                width: '100%',
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
               <Pill size={24} />
               <Typography variant="h6">Medication Assistant</Typography>
+              <Stack flexGrow={1} direction={'row'} justifyContent={'flex-end'}>
+                <FormControl>
+                  <InputLabel id="ai-mode">AI Mode</InputLabel>
+                  <Select
+                    labelId="ai-mode"
+                    size="small"
+                    value={llmMode}
+                    label={'AI Mode'}
+                    onChange={(e) => {
+                      setLLMMode(e.target.value)
+                    }}
+                  >
+                    <MenuItem value="fast">Fast</MenuItem>
+                    <MenuItem value="quality">Quality</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
             </Box>
           </Toolbar>
         </AppBar>
@@ -282,7 +318,7 @@ const MedicationTimeline: React.FC = () => {
                         height: 36,
                       }}
                     >
-                      {msg.role === 'user' ? 'U' : 'A'}
+                      {msg.role === 'user' ? 'U' : 'AI'}
                     </Avatar>
                     <Paper
                       elevation={msg.role === 'user' ? 1 : 4}
@@ -313,7 +349,7 @@ const MedicationTimeline: React.FC = () => {
                       flexDirection: 'row',
                     }}
                   >
-                    <Avatar
+                    {/* <Avatar
                       sx={{
                         bgcolor: '#4caf50',
                         width: 36,
@@ -321,12 +357,11 @@ const MedicationTimeline: React.FC = () => {
                       }}
                     >
                       {'A'}
-                    </Avatar>
-                    <Paper
-                      elevation={1}
+                    </Avatar> */}
+                    <Box
                       sx={{
                         p: 2,
-
+                        ml: `40px`,
                         borderRadius: 2,
                       }}
                     >
@@ -335,7 +370,7 @@ const MedicationTimeline: React.FC = () => {
                           animation: 'spin 1s infinite linear',
                         }}
                       />
-                    </Paper>
+                    </Box>
                   </Box>
                 </ListItem>
               )}
@@ -521,68 +556,6 @@ const MedicationTimeline: React.FC = () => {
             </Grid>
           </Paper>
 
-          <Paper elevation={2} sx={{ p: 3, borderRadius: 2 }}>
-            <Typography variant="h6" fontWeight="600" sx={{ mb: 2 }}>
-              Active Medications
-            </Typography>
-            <Grid container spacing={2}>
-              {medications?.medicationStatements.map((med, idx) => {
-                const daysLeft = getDaysUntilRunOut(med)
-                return (
-                  <Grid size={{ xs: 12, md: 6 }} key={idx}>
-                    <Card variant="outlined" sx={{}}>
-                      <CardContent>
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'start',
-                            gap: 1.5,
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              width: 12,
-                              height: 12,
-                              borderRadius: '50%',
-                              bgcolor: getMedColor(idx),
-                              mt: 0.5,
-                            }}
-                          />
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle1" fontWeight="600">
-                              {med.medication}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              {med.strength.amount}
-                              {med.strength.unit} {med.form}
-                            </Typography>
-                            <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{ display: 'block', mt: 1 }}
-                            >
-                              {med.timingSequence
-                                .map((timing) => timing.rawText)
-                                .join(', then ')}
-                            </Typography>
-                            {daysLeft && (
-                              <Chip
-                                label={`Runs out in ${daysLeft} days`}
-                                size="small"
-                                color="warning"
-                                sx={{ mt: 1 }}
-                              />
-                            )}
-                          </Box>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                )
-              })}
-            </Grid>
-          </Paper>
-
           <Dialog
             open={selectedDate !== null}
             onClose={() => setSelectedDate(null)}
@@ -720,6 +693,107 @@ const MedicationTimeline: React.FC = () => {
           </Dialog>
         </Container>
       </Box>
+      <Paper
+        elevation={2}
+        sx={{ width: '20vw', height: '100vh', p: 3, borderRadius: 2 }}
+      >
+        <Typography variant="h6" fontWeight="600" sx={{ mb: 2 }}>
+          Active Medications
+        </Typography>
+        <Grid container spacing={2}>
+          {medications?.medicationStatements.map((med, idx) => {
+            const daysLeft = getDaysUntilRunOut(med)
+            return (
+              <Grid size={12} key={idx}>
+                <Card variant="outlined" sx={{}}>
+                  <CardContent>
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'start',
+                        gap: 1.5,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: '50%',
+                          bgcolor: getMedColor(idx),
+                          mt: 0.5,
+                        }}
+                      />
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="subtitle1" fontWeight="600">
+                          {med.genericName}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {med.strength.amount &&
+                          med.strength.unit !== 'unknown'
+                            ? `${med.strength.amount} ${med.strength.unit}`
+                            : `Unconfirmed strength, `}
+                          {med.form}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: 'block', mt: 1 }}
+                        >
+                          {med.timingSequence.length
+                            ? med.timingSequence
+                                .map((timing) => {
+                                  return timing.frequency === 0
+                                    ? `Unknown timing`
+                                    : `${
+                                        timing.frequency === 1
+                                          ? 'Once'
+                                          : timing.frequency === 2
+                                          ? 'twice'
+                                          : `${timing.frequency} times`
+                                      } every ${
+                                        timing.periodMax
+                                          ? `${timing.period} to ${timing.periodMax} ${timing.periodUnit}s`
+                                          : timing.period === 1
+                                          ? `${timing.periodUnit}`
+                                          : `${timing.period} ${
+                                              timing.periodUnit
+                                            }s${
+                                              timing.isAsNeeded
+                                                ? ' as needed'
+                                                : ''
+                                            }${
+                                              timing.duration
+                                                ? ` over the course of ${
+                                                    timing.duration
+                                                  } ${timing.durationUnit}${
+                                                    timing.duration > 1
+                                                      ? 's'
+                                                      : ''
+                                                  }`
+                                                : ''
+                                            }`
+                                      }`
+                                })
+                                .join(', then ')
+                            : 'Unknown timing'}
+                        </Typography>
+                        {daysLeft ? (
+                          <Chip
+                            label={`Runs out in ${daysLeft} days`}
+                            size="small"
+                            color="warning"
+                            sx={{ mt: 1 }}
+                          />
+                        ) : null}
+                      </Box>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+            )
+          })}
+        </Grid>
+      </Paper>
     </Stack>
   )
 }

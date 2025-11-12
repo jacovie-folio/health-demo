@@ -9,6 +9,7 @@ import type { MedicationData } from './types'
  */
 export function useLLM(options?: {
   onUpdateMedications?: (medications: MedicationData) => void
+  fast?: boolean
 }) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -22,121 +23,122 @@ export function useLLM(options?: {
    * @param {number} options.temperature - Temperature setting (0-1)
    * @param {number} options.maxTokens - Maximum tokens in response
    */
-  const sendPrompt = useCallback(async (prompt: string) => {
-    setIsLoading(true)
-    setError(null)
+  const sendPrompt = useCallback(
+    async (prompt: string) => {
+      setIsLoading(true)
+      setError(null)
 
-    try {
-      const ai = new GoogleGenAI({
-        apiKey: import.meta.env.VITE_GEMINI_API_KEY!,
-      })
-      const config = {
-        thinkingConfig: {
-          thinkingBudget: -1,
-        },
-        imageConfig: {
-          imageSize: '1K',
-        },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          required: ['medicationStatements', 'freeTextResponse'],
-          properties: {
-            medicationStatements: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                required: [
-                  'medication',
-                  'rxnormCode',
-                  'strength',
-                  'timingSequence',
-                  'sourceText',
-                ],
-                properties: {
-                  medication: {
-                    type: Type.STRING,
-                  },
-                  brandName: {
-                    type: Type.STRING,
-                  },
-                  genericName: {
-                    type: Type.STRING,
-                  },
-                  rxnormCode: {
-                    type: Type.STRING,
-                  },
-                  strength: {
-                    type: Type.OBJECT,
-                    required: ['amount', 'unit'],
-                    properties: {
-                      amount: {
-                        type: Type.NUMBER,
-                      },
-                      unit: {
-                        type: Type.STRING,
-                      },
+      try {
+        const ai = new GoogleGenAI({
+          apiKey: import.meta.env.VITE_GEMINI_API_KEY!,
+        })
+        const config = {
+          thinkingConfig: {
+            thinkingBudget: -1,
+          },
+          imageConfig: {
+            imageSize: '1K',
+          },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ['medicationStatements', 'freeTextResponse'],
+            properties: {
+              medicationStatements: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  required: [
+                    'medication',
+                    'rxnormCode',
+                    'strength',
+                    'timingSequence',
+                    'sourceText',
+                  ],
+                  properties: {
+                    medication: {
+                      type: Type.STRING,
                     },
-                  },
-                  form: {
-                    type: Type.STRING,
-                  },
-                  timingSequence: {
-                    type: Type.ARRAY,
-                    items: {
+                    brandName: {
+                      type: Type.STRING,
+                    },
+                    genericName: {
+                      type: Type.STRING,
+                    },
+                    rxnormCode: {
+                      type: Type.STRING,
+                    },
+                    strength: {
                       type: Type.OBJECT,
-                      required: ['isAsNeeded'],
+                      required: ['amount', 'unit'],
                       properties: {
-                        orderInSequence: {
+                        amount: {
                           type: Type.NUMBER,
                         },
-                        frequency: {
-                          type: Type.NUMBER,
-                        },
-                        frequencyMax: {
-                          type: Type.NUMBER,
-                        },
-                        period: {
-                          type: Type.NUMBER,
-                        },
-                        periodMax: {
-                          type: Type.NUMBER,
-                        },
-                        periodUnit: {
-                          type: Type.STRING,
-                        },
-                        duration: {
-                          type: Type.NUMBER,
-                        },
-                        durationUnit: {
-                          type: Type.STRING,
-                        },
-                        count: {
-                          type: Type.NUMBER,
-                        },
-                        isAsNeeded: {
-                          type: Type.BOOLEAN,
-                        },
-                        rawText: {
+                        unit: {
                           type: Type.STRING,
                         },
                       },
                     },
-                  },
-                  sourceText: {
-                    type: Type.STRING,
+                    form: {
+                      type: Type.STRING,
+                    },
+                    timingSequence: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        required: ['isAsNeeded', 'orderInSequence', 'rawText'],
+                        properties: {
+                          orderInSequence: {
+                            type: Type.NUMBER,
+                          },
+                          frequency: {
+                            type: Type.NUMBER,
+                          },
+                          frequencyMax: {
+                            type: Type.NUMBER,
+                          },
+                          period: {
+                            type: Type.NUMBER,
+                          },
+                          periodMax: {
+                            type: Type.NUMBER,
+                          },
+                          periodUnit: {
+                            type: Type.STRING,
+                          },
+                          duration: {
+                            type: Type.NUMBER,
+                          },
+                          durationUnit: {
+                            type: Type.STRING,
+                          },
+                          count: {
+                            type: Type.NUMBER,
+                          },
+                          isAsNeeded: {
+                            type: Type.BOOLEAN,
+                          },
+                          rawText: {
+                            type: Type.STRING,
+                          },
+                        },
+                      },
+                    },
+                    sourceText: {
+                      type: Type.STRING,
+                    },
                   },
                 },
               },
-            },
-            freeTextResponse: {
-              type: Type.STRING,
+              freeTextResponse: {
+                type: Type.STRING,
+              },
             },
           },
-        },
-        systemInstruction: [
-          {
-            text: `**1. Role and Goal**
+          systemInstruction: [
+            {
+              text: `**1. Role and Goal**
 
 You are an expert AI Clinical Medication Data Parser. Your primary function is to receive a free-text string from a patient regarding their medications and transform it into a structured, machine-readable JSON format. Your parsing must be as robust and accurate as possible, inferring information where confidence is high and generating clarifying questions for the patient when data is missing or ambiguous.
 
@@ -245,42 +247,44 @@ Otherwise, if the input was well parsed, the \`freeTextResponse\` should simply 
 *   Always produce a valid JSON object as the final output.
 
 Let's begin. Here is the patient's input:`,
-          },
-        ],
-      }
-      const model = 'gemini-2.5-pro'
-      const contents = [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: prompt,
             },
           ],
-        },
-      ]
-
-      const response = await ai.models.generateContent({
-        model,
-        config,
-        contents,
-      })
-
-      if (response.text) {
-        const data: MedicationData = JSON.parse(response.text)
-        setResponse(data)
-        options?.onUpdateMedications?.(data)
-        return {
-          data,
         }
+        const model = options?.fast ? 'gemini-flash-latest' : 'gemini-2.5-pro'
+        const contents = [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: prompt,
+              },
+            ],
+          },
+        ]
+
+        const response = await ai.models.generateContent({
+          model,
+          config,
+          contents,
+        })
+
+        if (response.text) {
+          const data: MedicationData = JSON.parse(response.text)
+          setResponse(data)
+          options?.onUpdateMedications?.(data)
+          return {
+            data,
+          }
+        }
+      } catch (err) {
+        setError(err as Error)
+        throw err
+      } finally {
+        setIsLoading(false)
       }
-    } catch (err) {
-      setError(err as Error)
-      throw err
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
+    },
+    [options]
+  )
 
   /**
    * Reset the hook state
