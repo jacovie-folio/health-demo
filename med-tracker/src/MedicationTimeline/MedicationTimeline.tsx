@@ -45,7 +45,7 @@ const MedicationTimeline: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      text: "Hi! I can help you manage your medication schedule. Can you tell me what medications you're taking?",
+      text: "Hi there! I can help you manage your medication schedule. Can you tell me what medications you're taking?",
     },
   ])
   const [inputValue, setInputValue] = useState<string>('')
