@@ -4,6 +4,7 @@ export interface Strength {
   unit: string
 }
 export interface Timing {
+  orderInSequence?: number
   frequency?: number
   frequencyMax?: number
   period?: number
@@ -20,14 +21,14 @@ export interface MedicationStatement {
   brandName?: string
   genericName?: string
   rxnormCode: string
-  strength: Strength
   form?: string
-  timing: Timing
+  timingSequence: Timing[]
+  strength: Strength
   sourceText: string
 }
 export interface MedicationData {
   medicationStatements: MedicationStatement[]
-  freeTextExplanationOfMissingData?: string
+  freeTextResponse?: string
 }
 export interface Message {
   role: 'user' | 'assistant'

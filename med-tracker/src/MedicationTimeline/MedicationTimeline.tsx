@@ -2,7 +2,6 @@ import {
   AppBar,
   Avatar,
   Box,
-  Button,
   Card,
   CardContent,
   Chip,
@@ -17,12 +16,13 @@ import {
   List,
   ListItem,
   Paper,
+  Snackbar,
+  Stack,
   TextField,
   Toolbar,
   Typography,
 } from '@mui/material'
 import {
-  CalendarDays,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -41,98 +41,28 @@ import type {
 } from './types'
 import { useLLM } from './useLLM'
 
-// const _sampleMedications = {
-//   medicationStatements: [
-//     {
-//       medication: 'Lisinopril',
-//       brandName: 'Zestril',
-//       genericName: 'Lisinopril',
-//       rxnormCode: '104377',
-//       strength: { amount: 10, unit: 'mg' },
-//       form: 'tablet',
-//       timing: {
-//         frequency: 1,
-//         period: 1,
-//         periodUnit: 'day',
-//         duration: 30,
-//         durationUnit: 'days',
-//         count: 30,
-//         isAsNeeded: false,
-//         rawText: 'Take 1 tablet by mouth once daily',
-//       },
-//       sourceText: 'Lisinopril 10mg - Take 1 tablet daily',
-//     },
-//     {
-//       medication: 'Metformin',
-//       brandName: 'Glucophage',
-//       genericName: 'Metformin',
-//       rxnormCode: '6809',
-//       strength: { amount: 500, unit: 'mg' },
-//       form: 'tablet',
-//       timing: {
-//         frequency: 2,
-//         period: 1,
-//         periodUnit: 'day',
-//         duration: 30,
-//         durationUnit: 'days',
-//         count: 60,
-//         isAsNeeded: false,
-//         rawText: 'Take 1 tablet by mouth twice daily with meals',
-//       },
-//       sourceText: 'Metformin 500mg - Take twice daily with meals',
-//     },
-//     {
-//       medication: 'Ibuprofen',
-//       brandName: 'Advil',
-//       genericName: 'Ibuprofen',
-//       rxnormCode: '5640',
-//       strength: { amount: 200, unit: 'mg' },
-//       form: 'tablet',
-//       timing: {
-//         frequency: 1,
-//         frequencyMax: 3,
-//         period: 1,
-//         periodUnit: 'day',
-//         isAsNeeded: true,
-//         rawText: 'Take 1 tablet as needed for pain, up to 3 times daily',
-//       },
-//       sourceText: 'Ibuprofen 200mg - As needed for pain',
-//     },
-//     {
-//       medication: 'Atorvastatin',
-//       brandName: 'Lipitor',
-//       genericName: 'Atorvastatin',
-//       rxnormCode: '83367',
-//       strength: { amount: 20, unit: 'mg' },
-//       form: 'tablet',
-//       timing: {
-//         frequency: 1,
-//         period: 1,
-//         periodUnit: 'day',
-//         duration: 90,
-//         durationUnit: 'days',
-//         count: 90,
-//         isAsNeeded: false,
-//         rawText: 'Take 1 tablet by mouth at bedtime',
-//       },
-//       sourceText: 'Atorvastatin 20mg - Take at bedtime',
-//     },
-//   ],
-// }
-
 const MedicationTimeline: React.FC = () => {
-  const [showCalendar, setShowCalendar] = useState<boolean>(false)
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      text: 'Hi! I can help you manage your medication schedule. What would you like to know?',
+      text: "Hi! I can help you manage your medication schedule. Can you tell me what medications you're taking?",
     },
   ])
   const [inputValue, setInputValue] = useState<string>('')
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [currentDate, setCurrentDate] = useState<Date>(new Date())
+  const [notifyMedicationChange, setNotifyMedicationChange] = useState(false)
 
-  const { isLoading, sendPrompt, medications } = useLLM()
+  const handleAlertMedChange = useCallback(() => {
+    setNotifyMedicationChange(true)
+  }, [setNotifyMedicationChange])
+  const handleDismissMedChange = useCallback(() => {
+    setNotifyMedicationChange(false)
+  }, [setNotifyMedicationChange])
+
+  const { isLoading, sendPrompt, medications } = useLLM({
+    onUpdateMedications: handleAlertMedChange,
+  })
 
   // Sample medication data
 
@@ -141,14 +71,21 @@ const MedicationTimeline: React.FC = () => {
 
     setMessages((prev) => [...prev, { role: 'user', text: inputValue }])
     setInputValue('')
-    sendPrompt(inputValue)
+    sendPrompt(
+      [
+        ...messages
+          .filter((message) => message.role === 'user')
+          .map((message) => message.text),
+        inputValue,
+      ].join('\n')
+    )
       .then((response) => {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
             text:
-              response?.data.freeTextExplanationOfMissingData ||
+              response?.data.freeTextResponse ||
               "Alrighty! I've added your meds to the calendar. Did you have any others to add?",
           },
         ])
@@ -172,40 +109,50 @@ const MedicationTimeline: React.FC = () => {
   }
 
   // Calculate medication schedule
-  const getMedicationSchedule = (
-    med: MedicationStatement,
-    date: Date
-  ): MedicationSchedule | null => {
-    const startDate = new Date(currentDate)
-    startDate.setHours(0, 0, 0, 0)
+  const getMedicationSchedule = useCallback(
+    (med: MedicationStatement, date: Date): MedicationSchedule | null => {
+      const startDate = new Date(currentDate)
+      startDate.setHours(0, 0, 0, 0)
 
-    const daysDiff = Math.floor(
-      (date.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
-    )
+      const daysDiff = Math.floor(
+        (date.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+      )
 
-    if (med.timing.duration && daysDiff >= med.timing.duration) {
-      return null
-    }
+      let durationSoFar = 0
 
-    const frequency = med.timing.frequency || 1
-    const times: string[] = []
+      const times: string[] = []
 
-    if (med.timing.isAsNeeded) {
-      return { asNeeded: true, max: med.timing.frequencyMax || frequency }
-    }
+      for (const timing of med.timingSequence) {
+        if (timing.duration && daysDiff >= timing.duration + durationSoFar) {
+          durationSoFar += timing.duration
+          continue
+        }
 
-    if (frequency === 1) {
-      times.push('08:00')
-    } else if (frequency === 2) {
-      times.push('08:00', '20:00')
-    } else if (frequency === 3) {
-      times.push('08:00', '14:00', '20:00')
-    } else if (frequency === 4) {
-      times.push('08:00', '12:00', '16:00', '20:00')
-    }
+        if (!timing.duration) {
+          return null
+        }
 
-    return { times }
-  }
+        const frequency = timing.frequency || 1
+
+        if (timing.isAsNeeded) {
+          return { asNeeded: true, max: timing.frequencyMax || frequency }
+        }
+
+        if (frequency === 1) {
+          times.push('08:00')
+        } else if (frequency === 2) {
+          times.push('08:00', '20:00')
+        } else if (frequency === 3) {
+          times.push('08:00', '14:00', '20:00')
+        } else if (frequency === 4) {
+          times.push('08:00', '12:00', '16:00', '20:00')
+        }
+      }
+
+      return { times }
+    },
+    [currentDate]
+  )
 
   const generateCalendarDays = (): CalendarDay[] => {
     const start = new Date(currentDate)
@@ -246,12 +193,14 @@ const MedicationTimeline: React.FC = () => {
           .filter((med): med is MedicationWithSchedule => med !== null) || []
       )
     },
-    [getMedicationSchedule]
+    [getMedicationSchedule, medications]
   )
 
   const getDaysUntilRunOut = (med: MedicationStatement): number | null => {
-    if (!med.timing.duration) return null
-    return med.timing.duration
+    return med.timingSequence.reduce(
+      (sum, timing) => sum + (timing?.duration || 0),
+      0
+    )
   }
 
   const isToday = (date: Date): boolean => {
@@ -271,15 +220,28 @@ const MedicationTimeline: React.FC = () => {
     return colors[index % colors.length]
   }
 
-  if (!showCalendar) {
-    return (
+  const calendarDays = generateCalendarDays()
+  const monthYear = currentDate.toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  })
+
+  const navigateMonth = (direction: number): void => {
+    const newDate = new Date(currentDate)
+    newDate.setMonth(newDate.getMonth() + direction)
+    setCurrentDate(newDate)
+  }
+
+  return (
+    <Stack direction={'row'} divider={<Divider orientation="vertical" />}>
       <Box
+        borderRight={'1px solid'}
+        borderColor={'divider'}
         sx={{
           height: '100vh',
-          width: '100vw',
+          width: '50vw',
           display: 'flex',
           flexDirection: 'column',
-          bgcolor: '#f5f5f5',
         }}
       >
         <AppBar position="static" elevation={1}>
@@ -323,10 +285,10 @@ const MedicationTimeline: React.FC = () => {
                       {msg.role === 'user' ? 'U' : 'A'}
                     </Avatar>
                     <Paper
-                      elevation={1}
+                      elevation={msg.role === 'user' ? 1 : 4}
                       sx={{
                         p: 2,
-                        bgcolor: msg.role === 'user' ? '#e3f2fd' : '#fff',
+
                         borderRadius: 2,
                       }}
                     >
@@ -364,7 +326,7 @@ const MedicationTimeline: React.FC = () => {
                       elevation={1}
                       sx={{
                         p: 2,
-                        bgcolor: '#fff',
+
                         borderRadius: 2,
                       }}
                     >
@@ -383,22 +345,11 @@ const MedicationTimeline: React.FC = () => {
 
         <Paper elevation={3} sx={{ p: 2 }}>
           <Container maxWidth="md">
-            <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-              <Button
-                variant="contained"
-                startIcon={<CalendarDays size={20} />}
-                onClick={() => setShowCalendar(true)}
-                fullWidth
-                size="large"
-              >
-                View Medication Calendar
-              </Button>
-            </Box>
             <Box sx={{ display: 'flex', gap: 1 }}>
               <TextField
                 fullWidth
                 variant="outlined"
-                placeholder="Ask about your medications..."
+                placeholder="Add your medications to the tracker."
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyPress}
@@ -409,366 +360,367 @@ const MedicationTimeline: React.FC = () => {
                 color="primary"
                 onClick={handleSendMessage}
                 disabled={!inputValue.trim()}
-                sx={{
-                  bgcolor: '#2196f3',
-                  color: 'white',
-                  '&:hover': { bgcolor: '#1976d2' },
-                }}
               >
                 <Send size={20} />
               </IconButton>
             </Box>
+            <Snackbar
+              open={notifyMedicationChange}
+              autoHideDuration={5000}
+              onClose={handleDismissMedChange}
+              message={`Updated tracker medications: ${medications?.medicationStatements.map(
+                (s) => s.medication
+              )}`}
+            />
           </Container>
         </Paper>
       </Box>
-    )
-  }
 
-  const calendarDays = generateCalendarDays()
-  const monthYear = currentDate.toLocaleDateString('en-US', {
-    month: 'long',
-    year: 'numeric',
-  })
-
-  const navigateMonth = (direction: number): void => {
-    const newDate = new Date(currentDate)
-    newDate.setMonth(newDate.getMonth() + direction)
-    setCurrentDate(newDate)
-  }
-
-  return (
-    <Box sx={{ minHeight: '100vh', bgcolor: '#f5f5f5', p: 3 }}>
-      <Container maxWidth="lg">
-        <Paper elevation={2} sx={{ p: 3, mb: 3, borderRadius: 2 }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              mb: 3,
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Avatar sx={{ bgcolor: '#2196f3', width: 56, height: 56 }}>
-                <Pill size={28} />
-              </Avatar>
-              <Box>
-                <Typography variant="h5" fontWeight="bold">
-                  Medication Schedule
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Track your daily medication routine
-                </Typography>
+      <Box sx={{ height: '100vh', width: '50vw', p: 3 }}>
+        <Container maxWidth="lg">
+          <Paper elevation={2} sx={{ p: 3, mb: 3, borderRadius: 2 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                mb: 3,
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Avatar sx={{ width: 56, height: 56 }}>
+                  <Pill size={28} />
+                </Avatar>
+                <Box>
+                  <Typography variant="h5" fontWeight="bold">
+                    Medication Schedule
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Track your daily medication routine
+                  </Typography>
+                </Box>
               </Box>
             </Box>
-            <Button
-              variant="outlined"
-              onClick={() => setShowCalendar(false)}
-              startIcon={<ChevronLeft size={20} />}
+
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
             >
-              Back to Chat
-            </Button>
-          </Box>
+              <IconButton onClick={() => navigateMonth(-1)}>
+                <ChevronLeft />
+              </IconButton>
+              <Typography variant="h6" fontWeight="600">
+                {monthYear}
+              </Typography>
+              <IconButton onClick={() => navigateMonth(1)}>
+                <ChevronRight />
+              </IconButton>
+            </Box>
+          </Paper>
 
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <IconButton onClick={() => navigateMonth(-1)}>
-              <ChevronLeft />
-            </IconButton>
-            <Typography variant="h6" fontWeight="600">
-              {monthYear}
-            </Typography>
-            <IconButton onClick={() => navigateMonth(1)}>
-              <ChevronRight />
-            </IconButton>
-          </Box>
-        </Paper>
-
-        <Paper elevation={2} sx={{ p: 3, mb: 3, borderRadius: 2 }}>
-          <Grid container spacing={1} sx={{ mb: 2 }}>
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-              <Grid size={12 / 7} key={day}>
-                <Typography
-                  align="center"
-                  variant="body2"
-                  fontWeight="600"
-                  color="text.secondary"
-                >
-                  {day}
-                </Typography>
-              </Grid>
-            ))}
-          </Grid>
-
-          <Grid container spacing={1}>
-            {calendarDays.map((day, idx) => {
-              const dayMeds = getDayMedications(day.date)
-              const regularMeds = dayMeds.filter((m) => !m.schedule.asNeeded)
-              const asNeededMeds = dayMeds.filter((m) => m.schedule.asNeeded)
-              const totalDoses = regularMeds.reduce(
-                (sum, m) => sum + (m.schedule.times?.length || 0),
-                0
-              )
-
-              return (
-                <Grid size={12 / 7} key={idx}>
-                  <Paper
-                    elevation={
-                      selectedDate?.toDateString() === day.date.toDateString()
-                        ? 4
-                        : 1
-                    }
-                    onClick={() => setSelectedDate(day.date)}
-                    sx={{
-                      minHeight: 100,
-                      p: 1,
-                      cursor: 'pointer',
-                      bgcolor: day.isCurrentMonth ? '#fff' : '#f5f5f5',
-                      border: isToday(day.date) ? '2px solid #2196f3' : 'none',
-                      borderColor:
-                        selectedDate?.toDateString() === day.date.toDateString()
-                          ? '#9c27b0'
-                          : undefined,
-                      '&:hover': { bgcolor: '#fafafa' },
-                      transition: 'all 0.2s',
-                    }}
+          <Paper elevation={2} sx={{ p: 3, mb: 3, borderRadius: 2 }}>
+            <Grid container spacing={1} sx={{ mb: 2 }}>
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+                <Grid size={12 / 7} key={day}>
+                  <Typography
+                    align="center"
+                    variant="body2"
+                    fontWeight="600"
+                    color="text.secondary"
                   >
-                    <Typography variant="body2" fontWeight="500" sx={{ mb: 1 }}>
-                      {day.date.getDate()}
-                    </Typography>
-
-                    {day.isCurrentMonth && dayMeds.length > 0 && (
-                      <Box>
-                        {totalDoses > 0 && (
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 0.5,
-                              mb: 0.5,
-                            }}
-                          >
-                            <LinearProgress
-                              variant="determinate"
-                              value={Math.min(100, (totalDoses / 6) * 100)}
-                              sx={{ flex: 1, height: 6, borderRadius: 1 }}
-                            />
-                            <Typography variant="caption" fontWeight="600">
-                              {totalDoses}
-                            </Typography>
-                          </Box>
-                        )}
-                        {asNeededMeds.length > 0 && (
-                          <Chip
-                            label={`PRN × ${asNeededMeds.length}`}
-                            size="small"
-                            sx={{
-                              height: 20,
-                              fontSize: '0.7rem',
-                              bgcolor: '#fff3e0',
-                            }}
-                          />
-                        )}
-                      </Box>
-                    )}
-                  </Paper>
+                    {day}
+                  </Typography>
                 </Grid>
-              )
-            })}
-          </Grid>
-        </Paper>
+              ))}
+            </Grid>
 
-        <Paper elevation={2} sx={{ p: 3, borderRadius: 2 }}>
-          <Typography variant="h6" fontWeight="600" sx={{ mb: 2 }}>
-            Active Medications
-          </Typography>
-          <Grid container spacing={2}>
-            {medications?.medicationStatements.map((med, idx) => {
-              const daysLeft = getDaysUntilRunOut(med)
-              return (
-                <Grid size={{ xs: 12, md: 6 }} key={idx}>
-                  <Card variant="outlined" sx={{ bgcolor: '#fafafa' }}>
-                    <CardContent>
-                      <Box
-                        sx={{ display: 'flex', alignItems: 'start', gap: 1.5 }}
+            <Grid container spacing={1}>
+              {calendarDays.map((day, idx) => {
+                const dayMeds = getDayMedications(day.date)
+                const regularMeds = dayMeds.filter((m) => !m.schedule.asNeeded)
+                const asNeededMeds = dayMeds.filter((m) => m.schedule.asNeeded)
+                const totalDoses = regularMeds.reduce(
+                  (sum, m) => sum + (m.schedule.times?.length || 0),
+                  0
+                )
+
+                return (
+                  <Grid size={12 / 7} key={idx}>
+                    <Paper
+                      elevation={
+                        selectedDate?.toDateString() === day.date.toDateString()
+                          ? 4
+                          : 1
+                      }
+                      onClick={() => setSelectedDate(day.date)}
+                      sx={{
+                        minHeight: 100,
+                        p: 1,
+                        cursor: 'pointer',
+                        // bgcolor: day.isCurrentMonth ? '#fff' : '#f5f5f5',
+                        border: isToday(day.date)
+                          ? '2px solid #2196f3'
+                          : 'none',
+                        borderColor:
+                          selectedDate?.toDateString() ===
+                          day.date.toDateString()
+                            ? '#9c27b0'
+                            : undefined,
+                        '&:hover': { bgcolor: 'secondary.main' },
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <Typography
+                        variant="body2"
+                        fontWeight="500"
+                        sx={{ mb: 1 }}
                       >
-                        <Box
-                          sx={{
-                            width: 12,
-                            height: 12,
-                            borderRadius: '50%',
-                            bgcolor: getMedColor(idx),
-                            mt: 0.5,
-                          }}
-                        />
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="subtitle1" fontWeight="600">
-                            {med.medication}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {med.strength.amount}
-                            {med.strength.unit} {med.form}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ display: 'block', mt: 1 }}
-                          >
-                            {med.timing.rawText}
-                          </Typography>
-                          {daysLeft && (
+                        {day.date.getDate()}
+                      </Typography>
+
+                      {day.isCurrentMonth && dayMeds.length > 0 && (
+                        <Box>
+                          {totalDoses > 0 && (
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                mb: 0.5,
+                              }}
+                            >
+                              <LinearProgress
+                                variant="determinate"
+                                value={Math.min(100, (totalDoses / 6) * 100)}
+                                sx={{ flex: 1, height: 6, borderRadius: 1 }}
+                              />
+                              <Typography variant="caption" fontWeight="600">
+                                {totalDoses}
+                              </Typography>
+                            </Box>
+                          )}
+                          {asNeededMeds.length > 0 && (
                             <Chip
-                              label={`Runs out in ${daysLeft} days`}
+                              label={`PRN × ${asNeededMeds.length}`}
                               size="small"
-                              color="warning"
-                              sx={{ mt: 1 }}
+                              sx={{
+                                height: 20,
+                                fontSize: '0.7rem',
+                              }}
                             />
                           )}
                         </Box>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              )
-            })}
-          </Grid>
-        </Paper>
+                      )}
+                    </Paper>
+                  </Grid>
+                )
+              })}
+            </Grid>
+          </Paper>
 
-        <Dialog
-          open={selectedDate !== null}
-          onClose={() => setSelectedDate(null)}
-          maxWidth="md"
-          fullWidth
-        >
-          {selectedDate && (
-            <>
-              <DialogTitle>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <Box>
-                    <Typography variant="h6" fontWeight="600">
-                      {selectedDate.toLocaleDateString('en-US', {
-                        weekday: 'long',
-                        month: 'long',
-                        day: 'numeric',
-                      })}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Daily medication schedule
-                    </Typography>
-                  </Box>
-                  <IconButton onClick={() => setSelectedDate(null)}>
-                    <X />
-                  </IconButton>
-                </Box>
-              </DialogTitle>
-              <DialogContent>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                    pt: 1,
-                  }}
-                >
-                  {getDayMedications(selectedDate).map((med, idx) => (
-                    <Card
-                      key={idx}
-                      variant="outlined"
-                      sx={{ borderLeft: `4px solid ${getMedColor(idx)}` }}
-                    >
+          <Paper elevation={2} sx={{ p: 3, borderRadius: 2 }}>
+            <Typography variant="h6" fontWeight="600" sx={{ mb: 2 }}>
+              Active Medications
+            </Typography>
+            <Grid container spacing={2}>
+              {medications?.medicationStatements.map((med, idx) => {
+                const daysLeft = getDaysUntilRunOut(med)
+                return (
+                  <Grid size={{ xs: 12, md: 6 }} key={idx}>
+                    <Card variant="outlined" sx={{}}>
                       <CardContent>
                         <Box
                           sx={{
                             display: 'flex',
-                            justifyContent: 'space-between',
-                            mb: 2,
+                            alignItems: 'start',
+                            gap: 1.5,
                           }}
                         >
-                          <Box>
-                            <Typography variant="h6" fontWeight="600">
+                          <Box
+                            sx={{
+                              width: 12,
+                              height: 12,
+                              borderRadius: '50%',
+                              bgcolor: getMedColor(idx),
+                              mt: 0.5,
+                            }}
+                          />
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="subtitle1" fontWeight="600">
                               {med.medication}
                             </Typography>
                             <Typography variant="body2" color="text.secondary">
-                              {med.brandName} ({med.genericName})
+                              {med.strength.amount}
+                              {med.strength.unit} {med.form}
                             </Typography>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ display: 'block', mt: 1 }}
+                            >
+                              {med.timingSequence
+                                .map((timing) => timing.rawText)
+                                .join(', then ')}
+                            </Typography>
+                            {daysLeft && (
+                              <Chip
+                                label={`Runs out in ${daysLeft} days`}
+                                size="small"
+                                color="warning"
+                                sx={{ mt: 1 }}
+                              />
+                            )}
                           </Box>
-                          <Chip
-                            label={`${med.strength.amount}${med.strength.unit}`}
-                            sx={{ bgcolor: `${getMedColor(idx)}20` }}
-                          />
                         </Box>
-
-                        {med.schedule.asNeeded ? (
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 1,
-                              color: '#f57c00',
-                            }}
-                          >
-                            <Clock size={16} />
-                            <Typography variant="body2" fontWeight="500">
-                              As needed - up to {med.schedule.max} times today
-                            </Typography>
-                          </Box>
-                        ) : (
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 1,
-                            }}
-                          >
-                            {med.schedule.times?.map((time, timeIdx) => (
-                              <Paper
-                                key={timeIdx}
-                                variant="outlined"
-                                sx={{
-                                  p: 1.5,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 2,
-                                }}
-                              >
-                                <Clock size={16} color="#2196f3" />
-                                <Typography fontWeight="600">{time}</Typography>
-                                <Typography
-                                  variant="body2"
-                                  color="text.secondary"
-                                >
-                                  Take 1 {med.form}
-                                </Typography>
-                              </Paper>
-                            ))}
-                          </Box>
-                        )}
-
-                        <Divider sx={{ my: 2 }} />
-                        <Typography variant="caption" color="text.secondary">
-                          {med.timing.rawText}
-                        </Typography>
                       </CardContent>
                     </Card>
-                  ))}
-                </Box>
-              </DialogContent>
-            </>
-          )}
-        </Dialog>
-      </Container>
-    </Box>
+                  </Grid>
+                )
+              })}
+            </Grid>
+          </Paper>
+
+          <Dialog
+            open={selectedDate !== null}
+            onClose={() => setSelectedDate(null)}
+            maxWidth="md"
+            fullWidth
+          >
+            {selectedDate && (
+              <>
+                <DialogTitle>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Box>
+                      <Typography variant="h6" fontWeight="600">
+                        {selectedDate.toLocaleDateString('en-US', {
+                          weekday: 'long',
+                          month: 'long',
+                          day: 'numeric',
+                        })}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Daily medication schedule
+                      </Typography>
+                    </Box>
+                    <IconButton onClick={() => setSelectedDate(null)}>
+                      <X />
+                    </IconButton>
+                  </Box>
+                </DialogTitle>
+                <DialogContent>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                      pt: 1,
+                    }}
+                  >
+                    {getDayMedications(selectedDate).map((med, idx) => (
+                      <Card
+                        key={idx}
+                        variant="outlined"
+                        sx={{ borderLeft: `4px solid ${getMedColor(idx)}` }}
+                      >
+                        <CardContent>
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              mb: 2,
+                            }}
+                          >
+                            <Box>
+                              <Typography variant="h6" fontWeight="600">
+                                {med.medication}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                              >
+                                {med.brandName} ({med.genericName})
+                              </Typography>
+                            </Box>
+                            <Chip
+                              label={`${med.strength.amount}${med.strength.unit}`}
+                              sx={{ bgcolor: `${getMedColor(idx)}20` }}
+                            />
+                          </Box>
+
+                          {med.schedule.asNeeded ? (
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                color: '#f57c00',
+                              }}
+                            >
+                              <Clock size={16} />
+                              <Typography variant="body2" fontWeight="500">
+                                As needed - up to {med.schedule.max} times today
+                              </Typography>
+                            </Box>
+                          ) : (
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 1,
+                              }}
+                            >
+                              {med.schedule.times?.map((time, timeIdx) => (
+                                <Paper
+                                  key={timeIdx}
+                                  variant="outlined"
+                                  sx={{
+                                    p: 1.5,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 2,
+                                  }}
+                                >
+                                  <Clock size={16} color="#2196f3" />
+                                  <Typography fontWeight="600">
+                                    {time}
+                                  </Typography>
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                  >
+                                    Take 1 {med.form}
+                                  </Typography>
+                                </Paper>
+                              ))}
+                            </Box>
+                          )}
+
+                          <Divider sx={{ my: 2 }} />
+                          <Typography variant="caption" color="text.secondary">
+                            {med.timingSequence
+                              .map((timing) => timing.rawText)
+                              .join(', then ')}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Box>
+                </DialogContent>
+              </>
+            )}
+          </Dialog>
+        </Container>
+      </Box>
+    </Stack>
   )
 }
 
