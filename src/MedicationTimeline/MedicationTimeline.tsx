@@ -35,7 +35,8 @@ import {
   Send,
   X,
 } from 'lucide-react'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useRef, useState } from 'react'
+import { MedicationCard } from './MedicationCard'
 import type {
   CalendarDay,
   MedicationSchedule,
@@ -44,6 +45,7 @@ import type {
   Message,
 } from './types'
 import { useLLM } from './useLLM'
+import { getMedColor } from './utils'
 
 const MedicationTimeline: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
@@ -64,6 +66,8 @@ const MedicationTimeline: React.FC = () => {
     setNotifyMedicationChange(false)
   }, [setNotifyMedicationChange])
 
+  const chatRef = useRef<HTMLDivElement | null>(null)
+
   const [llmMode, setLLMMode] = useState<'quality' | 'fast'>('quality')
 
   const { isLoading, sendPrompt, medications } = useLLM({
@@ -79,7 +83,10 @@ const MedicationTimeline: React.FC = () => {
     setMessages((prev) => [
       ...prev,
       { role: 'user', text: inputValue },
-      { role: 'assistant', text: 'Just a second while I look that up!' },
+      {
+        role: 'assistant',
+        text: 'Just a second while I think of how to put that on your calendar!',
+      },
     ])
     setInputValue('')
     sendPrompt(
@@ -112,6 +119,12 @@ const MedicationTimeline: React.FC = () => {
       })
   }
 
+  React.useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight
+    }
+  }, [messages])
+
   const handleKeyPress = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -122,6 +135,7 @@ const MedicationTimeline: React.FC = () => {
   // Calculate medication schedule
   const getMedicationSchedule = useCallback(
     (med: MedicationStatement, date: Date): MedicationSchedule | null => {
+      // Start-of-day for reference (treat currentDate as day 0)
       const startDate = new Date(currentDate)
       startDate.setHours(0, 0, 0, 0)
 
@@ -129,39 +143,278 @@ const MedicationTimeline: React.FC = () => {
         (date.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
       )
 
-      let durationSoFar = 0
+      // Helper: generate times for a given frequency in a day
+      const timesForFrequency = (frequency: number): string[] => {
+        if (frequency <= 0) return []
+        if (frequency === 1) return ['08:00']
+        if (frequency === 2) return ['08:00', '20:00']
+        if (frequency === 3) return ['08:00', '14:00', '20:00']
+        if (frequency === 4) return ['08:00', '12:00', '16:00', '20:00']
 
-      const times: string[] = []
+        // For >4 doses, distribute evenly between 08:00 and 20:00
+        const startHour = 8
+        const endHour = 20
+        const span = endHour - startHour
+        const times: string[] = []
+        const step = span / (frequency - 1)
+        for (let i = 0; i < frequency; i++) {
+          const h = Math.round(startHour + step * i)
+          const hh = String(h).padStart(2, '0')
+          times.push(`${hh}:00`)
+        }
+        return times
+      }
 
+      // Iterate through timing sequence; timings may represent blocks with durations
+      let runningOffsetDays = 0
       for (const timing of med.timingSequence) {
-        if (timing.duration && daysDiff <= timing.duration + durationSoFar) {
-          durationSoFar += timing.duration
-          continue
+        const durationDays = timing.duration || 0
+
+        // If this timing has a duration, check whether the requested date falls within
+        // the timing's active window. If not, advance the offset and continue.
+        if (durationDays > 0) {
+          const windowStart = runningOffsetDays
+          const windowEnd = runningOffsetDays + durationDays // exclusive
+          if (daysDiff < windowStart || daysDiff >= windowEnd) {
+            runningOffsetDays += durationDays
+            continue
+          }
+          // date is inside this timing block; compute schedule based on this timing
+        } else {
+          // no duration -> this timing applies from runningOffsetDays onward
+          if (daysDiff < runningOffsetDays) {
+            // date is before this timing starts
+            runningOffsetDays += durationDays
+            continue
+          }
         }
 
-        if (!timing.duration) {
-          times.push('08:00')
-          return { times }
-        }
-
-        const frequency = timing.frequency || 1
-
+        // Handle as-needed (PRN)
         if (timing.isAsNeeded) {
-          return { asNeeded: true, max: timing.frequencyMax || frequency }
+          const freq = timing.frequency || 1
+          return {
+            asNeeded: true,
+            max: timing.frequencyMax || freq,
+            doseAmount: timing.doseAmount,
+            doseUnit: timing.doseUnit,
+          }
         }
 
-        if (frequency === 1) {
-          times.push('08:00')
-        } else if (frequency === 2) {
-          times.push('08:00', '20:00')
-        } else if (frequency === 3) {
-          times.push('08:00', '14:00', '20:00')
-        } else if (frequency === 4) {
-          times.push('08:00', '12:00', '16:00', '20:00')
+        // If explicit specificTimes are provided, prefer them.
+        if (timing.specificTimes && timing.specificTimes.length > 0) {
+          // If weekdays are specified, ensure the date's weekday matches
+          if (timing.weekdays && timing.weekdays.length > 0) {
+            const weekdayNames = [
+              'sunday',
+              'monday',
+              'tuesday',
+              'wednesday',
+              'thursday',
+              'friday',
+              'saturday',
+            ]
+            const wdName = weekdayNames[date.getDay()]
+            const lowered = timing.weekdays.map((w) => w.toLowerCase())
+            if (!lowered.includes(wdName)) {
+              return null
+            }
+            return {
+              times: timing.specificTimes,
+              source: 'explicit',
+              explicitWeekdays: timing.weekdays,
+              timeCategories: timing.timeCategories,
+              doseAmount: timing.doseAmount,
+              doseUnit: timing.doseUnit,
+            }
+          }
+
+          // No weekdays specified: still may be constrained by duration/period
+          const period = timing.period || 1
+          const periodUnit = (timing.periodUnit || 'day').toLowerCase()
+
+          if (periodUnit.startsWith('day')) {
+            const offsetDayIndex = daysDiff - runningOffsetDays
+            if (offsetDayIndex < 0) return null
+            const everyN = Math.max(1, period)
+            if (offsetDayIndex % everyN !== 0) return null
+            return {
+              times: timing.specificTimes,
+              source: 'explicit',
+              timeCategories: timing.timeCategories,
+              doseAmount: timing.doseAmount,
+              doseUnit: timing.doseUnit,
+            }
+          }
+
+          if (periodUnit.startsWith('week')) {
+            const daysSinceOffset = daysDiff - runningOffsetDays
+            if (daysSinceOffset < 0) return null
+            const weekIndex = Math.floor(daysSinceOffset / 7)
+            const everyNWeeks = Math.max(1, period)
+            if (weekIndex % everyNWeeks !== 0) return null
+            return {
+              times: timing.specificTimes,
+              source: 'explicit',
+              timeCategories: timing.timeCategories,
+              doseAmount: timing.doseAmount,
+              doseUnit: timing.doseUnit,
+            }
+          }
+
+          // fallback: return explicit times
+          return {
+            times: timing.specificTimes,
+            source: 'explicit',
+            doseAmount: timing.doseAmount,
+            doseUnit: timing.doseUnit,
+          }
+        }
+
+        // If timeCategories are provided (e.g., morning/night), map them to concrete times
+        const categoryToTime = (cat: string): string | null => {
+          const c = cat.toLowerCase()
+          if (c.includes('morn')) return '08:00'
+          if (c.includes('noon') || c.includes('afternoon')) return '14:00'
+          if (c.includes('even') || c.includes('night')) return '20:00'
+          if (c.includes('bed') || c.includes('bedtime')) return '22:00'
+          return null
+        }
+
+        if (timing.timeCategories && timing.timeCategories.length > 0) {
+          const mapped = timing.timeCategories
+            .map(categoryToTime)
+            .filter((t): t is string => !!t)
+          if (mapped.length === 0) {
+            // cannot interpret categories -> fall back to frequency/period behavior below
+          } else {
+            // if weekdays specified ensure it matches
+            if (timing.weekdays && timing.weekdays.length > 0) {
+              const weekdayNames = [
+                'sunday',
+                'monday',
+                'tuesday',
+                'wednesday',
+                'thursday',
+                'friday',
+                'saturday',
+              ]
+              const wdName = weekdayNames[date.getDay()]
+              const lowered = timing.weekdays.map((w) => w.toLowerCase())
+              if (!lowered.includes(wdName)) return null
+              return {
+                times: mapped,
+                source: 'explicit',
+                explicitWeekdays: timing.weekdays,
+                timeCategories: timing.timeCategories,
+                doseAmount: timing.doseAmount,
+                doseUnit: timing.doseUnit,
+              }
+            }
+
+            // ensure period/day constraints
+            const period = timing.period || 1
+            const periodUnit = (timing.periodUnit || 'day').toLowerCase()
+            if (periodUnit.startsWith('day')) {
+              const offsetDayIndex = daysDiff - runningOffsetDays
+              if (offsetDayIndex < 0) return null
+              const everyN = Math.max(1, period)
+              if (offsetDayIndex % everyN !== 0) return null
+              return {
+                times: mapped,
+                source: 'explicit',
+                timeCategories: timing.timeCategories,
+                doseAmount: timing.doseAmount,
+                doseUnit: timing.doseUnit,
+              }
+            }
+            if (periodUnit.startsWith('week')) {
+              const daysSinceOffset = daysDiff - runningOffsetDays
+              if (daysSinceOffset < 0) return null
+              const weekIndex = Math.floor(daysSinceOffset / 7)
+              const everyNWeeks = Math.max(1, period)
+              if (weekIndex % everyNWeeks !== 0) return null
+              return {
+                times: mapped,
+                source: 'explicit',
+                timeCategories: timing.timeCategories,
+                doseAmount: timing.doseAmount,
+                doseUnit: timing.doseUnit,
+              }
+            }
+            return {
+              times: mapped,
+              source: 'explicit',
+              timeCategories: timing.timeCategories,
+              doseAmount: timing.doseAmount,
+              doseUnit: timing.doseUnit,
+            }
+          }
+        }
+
+        // Otherwise use frequency/period logic (calculated)
+        const frequency = Math.max(0, timing.frequency || 0)
+        const period = timing.period || 1
+        const periodUnit = (timing.periodUnit || 'day').toLowerCase()
+
+        // If periodUnit is day: period==1 -> daily, period>1 -> every N days
+        if (periodUnit.startsWith('day')) {
+          // Determine whether this particular date is a dosing day for this timing
+          const offsetDayIndex = daysDiff - runningOffsetDays
+          if (offsetDayIndex < 0) return null
+          const everyN = Math.max(1, period)
+          if (offsetDayIndex % everyN !== 0) return null
+
+          // It's a dosing day -> return times for frequency (frequency is times per period)
+          const times = timesForFrequency(frequency || 1)
+          return {
+            times,
+            source: 'calculated',
+            doseAmount: timing.doseAmount,
+            doseUnit: timing.doseUnit,
+          }
+        }
+
+        // If periodUnit is week: frequency times per week every `period` weeks
+        if (periodUnit.startsWith('week')) {
+          const daysSinceOffset = daysDiff - runningOffsetDays
+          if (daysSinceOffset < 0) return null
+          const weekIndex = Math.floor(daysSinceOffset / 7)
+          const everyNWeeks = Math.max(1, period)
+          if (weekIndex % everyNWeeks !== 0) return null
+
+          // within an active week -> decide which weekdays to take med on
+          const baseWeekday = startDate.getDay()
+          const targetWeekday = date.getDay()
+
+          const freq = Math.min(7, Math.max(1, frequency || 1))
+          const chosenWeekdays = new Set<number>()
+          for (let i = 0; i < freq; i++) {
+            const approx = Math.round((i * 7) / freq)
+            chosenWeekdays.add((baseWeekday + approx) % 7)
+          }
+
+          if (!chosenWeekdays.has(targetWeekday)) return null
+
+          const times = timesForFrequency(freq)
+          return {
+            times,
+            source: 'calculated',
+            doseAmount: timing.doseAmount,
+            doseUnit: timing.doseUnit,
+          }
+        }
+
+        // Fallback: if we don't recognize periodUnit, treat as daily dosing
+        const times = timesForFrequency(frequency || 1)
+        return {
+          times,
+          source: 'calculated',
+          doseAmount: timing.doseAmount,
+          doseUnit: timing.doseUnit,
         }
       }
 
-      return { times }
+      return null
     },
     [currentDate]
   )
@@ -208,28 +461,9 @@ const MedicationTimeline: React.FC = () => {
     [getMedicationSchedule, medications]
   )
 
-  const getDaysUntilRunOut = (med: MedicationStatement): number | null => {
-    return med.timingSequence.reduce(
-      (sum, timing) => sum + (timing?.duration || 0),
-      0
-    )
-  }
-
   const isToday = (date: Date): boolean => {
     const today = new Date()
     return date.toDateString() === today.toDateString()
-  }
-
-  const getMedColor = (index: number): string => {
-    const colors = [
-      '#2196f3',
-      '#4caf50',
-      '#9c27b0',
-      '#ff9800',
-      '#e91e63',
-      '#3f51b5',
-    ]
-    return colors[index % colors.length]
   }
 
   const calendarDays = generateCalendarDays()
@@ -289,7 +523,7 @@ const MedicationTimeline: React.FC = () => {
           </Toolbar>
         </AppBar>
 
-        <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
+        <Box ref={chatRef} sx={{ flex: 1, overflow: 'auto', p: 2 }}>
           <Container maxWidth="md">
             <List>
               {messages.map((msg, idx) => (
@@ -670,7 +904,9 @@ const MedicationTimeline: React.FC = () => {
                                     variant="body2"
                                     color="text.secondary"
                                   >
-                                    Take 1 {med.form}
+                                    Take {med.schedule.doseAmount}{' '}
+                                    {med.schedule.doseUnit || med.form}
+                                    {med.schedule.doseAmount >= 2 ? 's' : ''}
                                   </Typography>
                                 </Paper>
                               ))}
@@ -695,104 +931,28 @@ const MedicationTimeline: React.FC = () => {
       </Box>
       <Paper
         elevation={2}
-        sx={{ width: '20vw', height: '100vh', p: 3, borderRadius: 2 }}
+        sx={{
+          width: '20vw',
+          height: '100vh',
+          maxHeight: '100vh',
+          p: 3,
+          borderRadius: 2,
+        }}
       >
         <Typography variant="h6" fontWeight="600" sx={{ mb: 2 }}>
           Active Medications
         </Typography>
-        <Grid container spacing={2}>
+
+        <Stack
+          spacing={2}
+          direction={'column'}
+          overflow={'auto'}
+          sx={{ height: '96%' }}
+        >
           {medications?.medicationStatements.map((med, idx) => {
-            const daysLeft = getDaysUntilRunOut(med)
-            return (
-              <Grid size={12} key={idx}>
-                <Card variant="outlined" sx={{}}>
-                  <CardContent>
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'start',
-                        gap: 1.5,
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          width: 12,
-                          height: 12,
-                          borderRadius: '50%',
-                          bgcolor: getMedColor(idx),
-                          mt: 0.5,
-                        }}
-                      />
-                      <Box sx={{ flex: 1 }}>
-                        <Typography variant="subtitle1" fontWeight="600">
-                          {med.genericName}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {med.strength.amount &&
-                          med.strength.unit !== 'unknown'
-                            ? `${med.strength.amount} ${med.strength.unit}`
-                            : `Unconfirmed strength, `}
-                          {med.form}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ display: 'block', mt: 1 }}
-                        >
-                          {med.timingSequence.length
-                            ? med.timingSequence
-                                .map((timing) => {
-                                  return timing.frequency === 0
-                                    ? `Unknown timing`
-                                    : `${
-                                        timing.frequency === 1
-                                          ? 'Once'
-                                          : timing.frequency === 2
-                                          ? 'twice'
-                                          : `${timing.frequency} times`
-                                      } every ${
-                                        timing.periodMax
-                                          ? `${timing.period} to ${timing.periodMax} ${timing.periodUnit}s`
-                                          : timing.period === 1
-                                          ? `${timing.periodUnit}`
-                                          : `${timing.period} ${
-                                              timing.periodUnit
-                                            }s${
-                                              timing.isAsNeeded
-                                                ? ' as needed'
-                                                : ''
-                                            }${
-                                              timing.duration
-                                                ? ` over the course of ${
-                                                    timing.duration
-                                                  } ${timing.durationUnit}${
-                                                    timing.duration > 1
-                                                      ? 's'
-                                                      : ''
-                                                  }`
-                                                : ''
-                                            }`
-                                      }`
-                                })
-                                .join(', then ')
-                            : 'Unknown timing'}
-                        </Typography>
-                        {daysLeft ? (
-                          <Chip
-                            label={`Runs out in ${daysLeft} days`}
-                            size="small"
-                            color="warning"
-                            sx={{ mt: 1 }}
-                          />
-                        ) : null}
-                      </Box>
-                    </Box>
-                  </CardContent>
-                </Card>
-              </Grid>
-            )
+            return <MedicationCard key={idx} med={med} idx={idx} />
           })}
-        </Grid>
+        </Stack>
       </Paper>
     </Stack>
   )

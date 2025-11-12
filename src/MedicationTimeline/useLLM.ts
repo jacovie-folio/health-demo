@@ -2,143 +2,8 @@ import { useCallback, useState } from 'react'
 
 import { GoogleGenAI, Type } from '@google/genai'
 import type { MedicationData } from './types'
-/**
- * Custom React hook for making requests to Google's Gemini API
- * @param {string} apiKey - Your Gemini API key
- * @returns {Object} Hook state and functions
- */
-export function useLLM(options?: {
-  onUpdateMedications?: (medications: MedicationData) => void
-  fast?: boolean
-}) {
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
-  const [response, setResponse] = useState<MedicationData | null>(null)
 
-  /**
-   * Send a prompt to Gemini and wait for complete response
-   * @param {string} prompt - The prompt to send
-   * @param {Object} options - Additional options
-   * @param {string} options.model - Model to use (default: gemini-pro)
-   * @param {number} options.temperature - Temperature setting (0-1)
-   * @param {number} options.maxTokens - Maximum tokens in response
-   */
-  const sendPrompt = useCallback(
-    async (prompt: string) => {
-      setIsLoading(true)
-      setError(null)
-
-      try {
-        const ai = new GoogleGenAI({
-          apiKey: import.meta.env.VITE_GEMINI_API_KEY!,
-        })
-        const config = {
-          thinkingConfig: {
-            thinkingBudget: -1,
-          },
-          imageConfig: {
-            imageSize: '1K',
-          },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            required: ['medicationStatements', 'freeTextResponse'],
-            properties: {
-              medicationStatements: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  required: [
-                    'medication',
-                    'rxnormCode',
-                    'strength',
-                    'timingSequence',
-                    'sourceText',
-                  ],
-                  properties: {
-                    medication: {
-                      type: Type.STRING,
-                    },
-                    brandName: {
-                      type: Type.STRING,
-                    },
-                    genericName: {
-                      type: Type.STRING,
-                    },
-                    rxnormCode: {
-                      type: Type.STRING,
-                    },
-                    strength: {
-                      type: Type.OBJECT,
-                      required: ['amount', 'unit'],
-                      properties: {
-                        amount: {
-                          type: Type.NUMBER,
-                        },
-                        unit: {
-                          type: Type.STRING,
-                        },
-                      },
-                    },
-                    form: {
-                      type: Type.STRING,
-                    },
-                    timingSequence: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        required: ['isAsNeeded', 'orderInSequence', 'rawText'],
-                        properties: {
-                          orderInSequence: {
-                            type: Type.NUMBER,
-                          },
-                          frequency: {
-                            type: Type.NUMBER,
-                          },
-                          frequencyMax: {
-                            type: Type.NUMBER,
-                          },
-                          period: {
-                            type: Type.NUMBER,
-                          },
-                          periodMax: {
-                            type: Type.NUMBER,
-                          },
-                          periodUnit: {
-                            type: Type.STRING,
-                          },
-                          duration: {
-                            type: Type.NUMBER,
-                          },
-                          durationUnit: {
-                            type: Type.STRING,
-                          },
-                          count: {
-                            type: Type.NUMBER,
-                          },
-                          isAsNeeded: {
-                            type: Type.BOOLEAN,
-                          },
-                          rawText: {
-                            type: Type.STRING,
-                          },
-                        },
-                      },
-                    },
-                    sourceText: {
-                      type: Type.STRING,
-                    },
-                  },
-                },
-              },
-              freeTextResponse: {
-                type: Type.STRING,
-              },
-            },
-          },
-          systemInstruction: [
-            {
-              text: `**1. Role and Goal**
+const SYSTEM_INSTRUCTIONS = `**1. Role and Goal**
 
 You are an expert AI Clinical Medication Data Parser. Your primary function is to receive a free-text string from a patient regarding their medications and transform it into a structured, machine-readable JSON format. Your parsing must be as robust and accurate as possible, inferring information where confidence is high and generating clarifying questions for the patient when data is missing or ambiguous.
 
@@ -162,11 +27,13 @@ Your output **MUST** be a single, valid JSON object with the following structure
       "strength": {
         "amount": "number",
         "unit": "string"
-      }, // e.g., "10 mg", "500 mcg/mL"
+      }, // e.g., "10 mg", "500 mcg/mL" this is the amount in a single tablet/capsule/inhalation/etc.
       "form": "string | null", // e.g., "tablet", "capsule", "inhalation"
       "timingSequence": [{
         "orderInSequence": "number", // If dosage changes over time within duration, each duration segment gets its own entry
-        "frequency": "number | null", // How many times per period
+        "doseAmount": "number", // How many tablets/capsules/etc. should be taken together?
+        "doseUnit": "string | null", // If the dose isn't in the same unit as the \`form\` field, this must be provided
+        "frequency": "number", // How many times per period? By default this is always at least 1
         "frequencyMax": "number | null", // For ranges, e.g., 1-2 times
         "period": "number | null", // The time interval
         "periodMax": "number | null", // For ranges, e.g., every 4-6 hours
@@ -175,6 +42,9 @@ Your output **MUST** be a single, valid JSON object with the following structure
         "durationUnit": "string | null", // e.g. "days", "weeks"
         "count": "number | null", // Total number of doses/cycles
         "isAsNeeded": "boolean", // True if PRN, "as needed", "if necessary"
+        "specificTimes": "string[] | null", // Optional explicit times (HH:MM) like ["08:00","20:00"]
+        "timeCategories": "string[] | null", // Optional categories like ["morning","night"] to be mapped to concrete times
+        "weekdays": "string[] | null", // Optional weekday names in lowercase, e.g. ["monday","wednesday"]
         "rawText": "string | null" // The original timing text, e.g., "twice a day as needed for pain"
       }],
       "sourceText": "string" // The segment of the input text corresponding to this medication
@@ -208,17 +78,30 @@ Your output **MUST** be a single, valid JSON object with the following structure
 
 **D. Timing and Frequency (\`timingSequence\` item)**
 *   Parse timing instructions into an item of the structured \`timingSequence\` array.
+*   The parser should produce either explicit schedule data (preferred) or a generic frequency/period representation.
+  *   Explicit fields (preferred when present):
+  - \`specificTimes\`: array of "HH:MM" strings (24-hour). Use these when the text includes explicit times like "8am" or "20:00".
+  - \`timeCategories\`: array of human categories such as "morning", "afternoon", "evening", "bedtime". These will be mapped to concrete times by the app (e.g., morning -> 08:00).
+  - \`weekdays\`: array of weekday names in lowercase (e.g., "monday", "wednesday"). Use these when the text specifies days of the week.
+  *   If explicit fields are not present, populate the generic fields below so the app can calculate dosing days/times.
 *   **\`isAsNeeded\`**: Set to \`true\` if the text includes phrases like "as needed," "PRN," or "for pain/anxiety/etc."
 *   **Ranges**: Use the \`Max\` fields for ranges.
-    *   Input: "one to two tablets" -> \`frequency\`: 1, \`frequencyMax\`: 2.
-    *   Input: "every four to six hours" -> \`period\`: 4, \`periodMax\`: 6, \`periodUnit\`: "hour".
+  *   Input: "one to two tablets" -> \`frequency\`: 1, \`frequencyMax\`: 2.
+  *   Input: "every four to six hours" -> \`period\`: 4, \`periodMax\`: 6, \`periodUnit\`: "hour".
 *   **Standard Frequencies**:
-    *   Input: "Twice a day" -> \`frequency\`: 2, \`period\`: 1, \`periodUnit\`: "day".
-    *   Input: "Once daily" -> \`frequency\`: 1, \`period\`: 1, \`periodUnit\`: "day".
+  *   Input: "Twice a day" -> \`frequency\`: 2, \`period\`: 1, \`periodUnit\`: "day".
+  *   Input: "Once daily" -> \`frequency\`: 1, \`period\`: 1, \`periodUnit\`: "day".
+*   **Dose Amount vs. Frequency**:
+  *   Input: "One tablet twice a day" -> \`doseAmount\`: 1, \`doseUnit\`: "tablet", \`frequency\`: 2, \`period\`: 1, \`periodUnit\`: "day".
+  *   Input: "Two tablets once every two days" -> \`doseAmount\`: 2, \`doseUnit\`: "tablet", \`frequency\`: 1, \`period\`: 2, \`periodUnit\`: "day".
+*   **Weekday-specific examples**:
+  *   Input: "Mon/Wed/Fri" or "on Mondays and Thursdays" -> \`weekdays\`: ["monday","wednesday","friday"] and optionally \`specificTimes\` or \`timeCategories\`.
 *   **Long-term Cycles**:
-    *   Input: "every 3 weeks for 16 cycles" -> \`frequency\`: 1, \`period\`: 3, \`periodUnit\`: "week", \`count\`: 16.
+  *   Input: "every 3 weeks for 16 cycles" -> \`frequency\`: 1, \`period\`: 3, \`periodUnit\`: "week", \`count\`: 16.
 *   **Duration**:
-    *   Input: "for 10 days" -> \`duration\`: 10, \`durationUnit\`: "days".
+  *   Input: "for 10 days" -> \`duration\`: 10, \`durationUnit\`: "days".
+
+Important: prefer explicit representations where possible. If both explicit fields and generic fields are present, include them both; the app will prefer \`specificTimes\`/\`weekdays\` over generic frequency/period when rendering the schedule.
 
 **5. Handling Missing Data and Ambiguity (\`freeTextResponse\`)**
 
@@ -246,42 +129,215 @@ Otherwise, if the input was well parsed, the \`freeTextResponse\` should simply 
 *   Process the entire input string, extracting all identifiable medications into the \`medications\` array.
 *   Always produce a valid JSON object as the final output.
 
-Let's begin. Here is the patient's input:`,
+Let's begin. Here is the patient's input:`
+
+/**
+ * Custom React hook for making requests to Google's Gemini API
+ * @param {string} apiKey - Your Gemini API key
+ * @returns {Object} Hook state and functions
+ */
+export function useLLM(options?: {
+  onUpdateMedications?: (medications: MedicationData) => void
+  fast?: boolean
+}) {
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+  const [response, setResponse] = useState<MedicationData | null>(null)
+
+  /**
+   * Send a prompt to Gemini and wait for complete response
+   * @param {string} prompt - The prompt to send
+   * @param {Object} options - Additional options
+   * @param {string} options.model - Model to use (default: gemini-pro)
+   * @param {number} options.temperature - Temperature setting (0-1)
+   * @param {number} options.maxTokens - Maximum tokens in response
+   */
+  const sendPrompt = useCallback(
+    async (prompt: string) => {
+      setIsLoading(true)
+      setError(null)
+
+      const ai = new GoogleGenAI({
+        apiKey: import.meta.env.VITE_GEMINI_API_KEY!,
+      })
+      const config = {
+        thinkingConfig: {
+          thinkingBudget: -1,
+        },
+        imageConfig: {
+          imageSize: '1K',
+        },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          required: ['medicationStatements', 'freeTextResponse'],
+          properties: {
+            medicationStatements: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                required: [
+                  'medication',
+                  'rxnormCode',
+                  'strength',
+                  'timingSequence',
+                  'sourceText',
+                ],
+                properties: {
+                  medication: {
+                    type: Type.STRING,
+                  },
+                  brandName: {
+                    type: Type.STRING,
+                  },
+                  genericName: {
+                    type: Type.STRING,
+                  },
+                  rxnormCode: {
+                    type: Type.STRING,
+                  },
+                  strength: {
+                    type: Type.OBJECT,
+                    required: ['amount', 'unit'],
+                    properties: {
+                      amount: {
+                        type: Type.NUMBER,
+                      },
+                      unit: {
+                        type: Type.STRING,
+                      },
+                    },
+                  },
+                  form: {
+                    type: Type.STRING,
+                  },
+                  timingSequence: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      required: [
+                        'isAsNeeded',
+                        'orderInSequence',
+                        'doseAmount',
+                        'frequency',
+                        'rawText',
+                      ],
+                      properties: {
+                        orderInSequence: {
+                          type: Type.NUMBER,
+                        },
+                        doseAmount: {
+                          type: Type.NUMBER,
+                        },
+                        doseUnit: {
+                          type: Type.STRING,
+                        },
+                        frequency: {
+                          type: Type.NUMBER,
+                        },
+                        frequencyMax: {
+                          type: Type.NUMBER,
+                        },
+                        period: {
+                          type: Type.NUMBER,
+                        },
+                        periodMax: {
+                          type: Type.NUMBER,
+                        },
+                        periodUnit: {
+                          type: Type.STRING,
+                        },
+                        specificTimes: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                        timeCategories: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                        weekdays: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.STRING,
+                            enum: [
+                              'sunday',
+                              'monday',
+                              'tuesday',
+                              'wednesday',
+                              'thursday',
+                              'friday',
+                              'saturday',
+                            ],
+                          },
+                        },
+                        duration: {
+                          type: Type.NUMBER,
+                        },
+                        durationUnit: {
+                          type: Type.STRING,
+                        },
+                        count: {
+                          type: Type.NUMBER,
+                        },
+                        isAsNeeded: {
+                          type: Type.BOOLEAN,
+                        },
+                        rawText: {
+                          type: Type.STRING,
+                        },
+                      },
+                    },
+                  },
+                  sourceText: {
+                    type: Type.STRING,
+                  },
+                },
+              },
+            },
+            freeTextResponse: {
+              type: Type.STRING,
+            },
+          },
+        },
+        systemInstruction: [
+          {
+            text: SYSTEM_INSTRUCTIONS,
+          },
+        ],
+      }
+      const model = options?.fast ? 'gemini-flash-latest' : 'gemini-2.5-pro'
+      const contents = [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: prompt,
             },
           ],
-        }
-        const model = options?.fast ? 'gemini-flash-latest' : 'gemini-2.5-pro'
-        const contents = [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ]
+        },
+      ]
+      for (let numRetries = 0; numRetries <= 3; numRetries++) {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            config,
+            contents,
+          })
 
-        const response = await ai.models.generateContent({
-          model,
-          config,
-          contents,
-        })
-
-        if (response.text) {
-          const data: MedicationData = JSON.parse(response.text)
-          setResponse(data)
-          options?.onUpdateMedications?.(data)
-          return {
-            data,
+          if (response.text) {
+            const data: MedicationData = JSON.parse(response.text)
+            setResponse(data)
+            options?.onUpdateMedications?.(data)
+            setIsLoading(false)
+            return {
+              data,
+            }
           }
+        } catch (err) {
+          setError(err as Error)
         }
-      } catch (err) {
-        setError(err as Error)
-        throw err
-      } finally {
-        setIsLoading(false)
       }
+      setIsLoading(false)
     },
     [options]
   )
