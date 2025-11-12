@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://juegodynamics.github.io/med-tracker",
+  "homepage": "https://juegodynamics.github.io/health-demo",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
