@@ -246,6 +246,7 @@ export function useLLM(options?: {
                         },
                         periodUnit: {
                           type: Type.STRING,
+                          enum: ['hour', 'day', 'week'],
                         },
                         specificTimes: {
                           type: Type.ARRAY,
@@ -275,6 +276,7 @@ export function useLLM(options?: {
                         },
                         durationUnit: {
                           type: Type.STRING,
+                          enum: ['day', 'week', 'month', 'year'],
                         },
                         count: {
                           type: Type.NUMBER,
