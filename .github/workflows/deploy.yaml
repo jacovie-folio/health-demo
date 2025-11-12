@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Go to med-tracker dir
-        run: cd med-tracker
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -20,6 +18,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20' # or your preferred Node.js version
+
       - name: Install dependencies
         run: pnpm install
       - name: Build project
