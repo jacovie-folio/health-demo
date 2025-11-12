@@ -20,6 +20,8 @@ jobs:
         with:
           node-version: '20' # or your preferred Node.js version
           cache: 'pnpm'
+      - name: Go to med-tracker dir
+        run: cd med-tracker
       - name: Install dependencies
         run: pnpm install
       - name: Build project
